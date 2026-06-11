@@ -614,13 +614,13 @@ class TrainerConfig(BaseConfig):
     resume_path: Optional[str] = None
     log_path: str = "/tmp/skyrl-logs"
     """Path for infrastructure log files. For multi-node, use a shared filesystem path to consolidate logs."""
-    ckpt_path: str = field(default_factory=lambda: os.path.expanduser("~/ckpts/"))
+    ckpt_path: str = field(default_factory=lambda: os.path.expanduser("/projects/I20240005/rnouaj/ckpts/"))
     max_ckpts_to_keep: int = -1
     """``-1`` to keep all checkpoints, ``N`` to keep only the last N."""
     ckpt_interval: int = 10
     hf_save_interval: int = -1
     """Save HuggingFace-format model every N steps. ``-1`` to disable."""
-    export_path: str = field(default_factory=lambda: os.path.expanduser("~/exports/"))
+    export_path: str = field(default_factory=lambda: os.path.expanduser("/projects/I20240005/rnouaj/exports/"))
     """Path for exported artifacts (HF models, debug dumps, etc.)."""
     bf16: bool = True
     epochs: int = 1
