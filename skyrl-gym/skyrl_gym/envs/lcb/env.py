@@ -19,13 +19,17 @@ class LCBEnv(BaseTextEnv):
         assert "reward_spec" in extras, "reward_spec field is required"
         assert "ground_truth" in extras["reward_spec"], "ground_truth is required in reward_spec field"
         self.tests = json.loads(extras["reward_spec"]["ground_truth"])
+        self._sandbox_profiling: Dict[str, Any] = {}
 
     def _get_reward(self, action: str) -> float:
-        return compute_score(action, self.tests)
+        _, reward, _ = compute_score(action, self.tests)
+        return reward
 
     def step(self, action: str) -> BaseTextEnvStepOutput:
         done = True
-        parsed_code, reward = compute_score(action, self.tests)
+        parsed_code, reward, self._sandbox_profiling = compute_score(action, self.tests)
 
-        # RL on LCB w/ single-turn
         return BaseTextEnvStepOutput(observations=[], reward=reward, done=done, metadata={"parsed_code": parsed_code})
+
+    def get_metrics(self) -> Dict[str, Any]:
+        return {"sandbox_profiling": self._sandbox_profiling}

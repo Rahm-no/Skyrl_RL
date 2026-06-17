@@ -6,8 +6,14 @@ import sys
 import faulthandler
 import platform
 import re
+import warnings
 from datetime import datetime
 import signal
+
+# Model-generated code exec'd by this evaluator often contains regex literals
+# with unrecognised escape sequences (e.g. '\[', '\/'). Suppress the resulting
+# SyntaxWarning flood — the code still runs correctly.
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 from io import StringIO
 from unittest.mock import patch, mock_open
@@ -601,6 +607,12 @@ def postprocess_lcb_sample(sample):
     return sample
 
 
+def _lcb_temp_run(sample, generation, debug, result, metadata_list, timeout):
+    res, metadata = run_test(sample, test=generation, debug=debug, timeout=timeout)
+    result.append(res)
+    metadata_list.append(metadata)
+
+
 def lcb_check_correctness(sample, generation, timeout=6, debug=False):
     """Check correctness of code generation with a global timeout.
     The global timeout is to catch some extreme/rare cases not handled by the timeouts
@@ -612,13 +624,8 @@ def lcb_check_correctness(sample, generation, timeout=6, debug=False):
     result = manager.list()
     metadata_list = manager.list()
 
-    def _temp_run(sample, generation, debug, result, metadata_list, timeout):
-        res, metadata = run_test(sample, test=generation, debug=debug, timeout=timeout)
-        result.append(res)
-        metadata_list.append(metadata)
-
     p = multiprocessing.Process(
-        target=_temp_run,
+        target=_lcb_temp_run,
         args=(sample, generation, debug, result, metadata_list, timeout),
     )
     p.start()
@@ -655,10 +662,26 @@ def extract_code_from_model(model_response: str):
 
 
 def compute_score(model_response, tests):
+    t_start = time.perf_counter()
     output_code = extract_code_from_model(model_response)
+    code_extraction_s = time.perf_counter() - t_start
+
+    profiling = {
+        "code_extraction_s": code_extraction_s,
+        "num_test_cases": len(tests),
+    }
+
     if output_code is None:
-        return output_code, 0.0
+        profiling["sandbox_execution_s"] = 0.0
+        profiling["code_valid"] = False
+        profiling["is_correct"] = False
+        return output_code, 0.0, profiling
+
+    profiling["code_valid"] = True
+    t_sandbox = time.perf_counter()
     is_correct = lcb_check_correctness(tests, output_code, debug=False)
+    profiling["sandbox_execution_s"] = time.perf_counter() - t_sandbox
+    profiling["is_correct"] = is_correct
 
     reward = 1.0 if is_correct else 0.0
-    return output_code, reward
+    return output_code, reward, profiling
