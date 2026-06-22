@@ -1,4 +1,5 @@
 import json
+import os
 import warnings
 from typing import List, Optional
 import argparse
@@ -32,11 +33,10 @@ def load_docs(corpus, doc_idxs):
     return results
 
 
-def load_model(model_path: str, use_fp16: bool = False):
-    # model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+def load_model(model_path: str, use_fp16: bool = False, device: str = "cuda"):
     model = AutoModel.from_pretrained(model_path, trust_remote_code=True)
     model.eval()
-    model.cuda()
+    model.to(device)
     if use_fp16:
         model = model.half()
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
@@ -56,14 +56,15 @@ def pooling(pooler_output, last_hidden_state, attention_mask=None, pooling_metho
 
 
 class Encoder:
-    def __init__(self, model_name, model_path, pooling_method, max_length, use_fp16):
+    def __init__(self, model_name, model_path, pooling_method, max_length, use_fp16, device="cuda"):
         self.model_name = model_name
         self.model_path = model_path
         self.pooling_method = pooling_method
         self.max_length = max_length
         self.use_fp16 = use_fp16
+        self.device = device
 
-        self.model, self.tokenizer = load_model(model_path=model_path, use_fp16=use_fp16)
+        self.model, self.tokenizer = load_model(model_path=model_path, use_fp16=use_fp16, device=device)
         self.model.eval()
 
     @torch.no_grad()
@@ -87,7 +88,7 @@ class Encoder:
         inputs = self.tokenizer(
             query_list, max_length=self.max_length, padding=True, truncation=True, return_tensors="pt"
         )
-        inputs = {k: v.cuda() for k, v in inputs.items()}
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         if "T5" in type(self.model).__name__:
             # T5-based retrieval model
@@ -209,6 +210,7 @@ class DenseRetriever(BaseRetriever):
             pooling_method=config.retrieval_pooling_method,
             max_length=config.retrieval_query_max_length,
             use_fp16=config.retrieval_use_fp16,
+            device=getattr(config, "encoder_device", "cuda"),
         )
         self.topk = config.retrieval_topk
         self.batch_size = config.retrieval_batch_size
@@ -308,36 +310,47 @@ class QueryRequest(BaseModel):
 
 
 app = FastAPI()
+retriever = None
+config = None
+
+
+@app.on_event("startup")
+def _init_retriever():
+    """Read config from env vars and build the retriever. Runs once per worker."""
+    global retriever, config
+    if retriever is not None:
+        return
+    config = Config(
+        retrieval_method=os.environ.get("RETRIEVER_NAME", "e5"),
+        index_path=os.environ["RETRIEVER_INDEX_PATH"],
+        corpus_path=os.environ["RETRIEVER_CORPUS_PATH"],
+        retrieval_topk=int(os.environ.get("RETRIEVER_TOPK", "3")),
+        faiss_gpu=os.environ.get("RETRIEVER_FAISS_GPU", "0") == "1",
+        retrieval_model_path=os.environ.get("RETRIEVER_MODEL_PATH", "intfloat/e5-base-v2"),
+        retrieval_pooling_method="mean",
+        retrieval_query_max_length=256,
+        retrieval_use_fp16=True,
+        retrieval_batch_size=512,
+    )
+    config.encoder_device = os.environ.get("RETRIEVER_DEVICE", "cuda")
+    retriever = get_retriever(config)
 
 
 @app.post("/retrieve")
 def retrieve_endpoint(request: QueryRequest):
-    """
-    Endpoint that accepts a single query and performs retrieval.
-    Input format:
-    {
-      "query": "What is Python?",
-      "topk": 3,
-      "return_scores": true
-    }
-    """
     if not request.topk:
-        request.topk = config.retrieval_topk  # fallback to default
+        request.topk = config.retrieval_topk
 
-    # Perform retrieval
     if request.return_scores:
         results, scores = retriever.search(query=request.query, num=request.topk, return_score=True)
     else:
         results = retriever.search(query=request.query, num=request.topk, return_score=False)
         scores = None
 
-    # Format response
     resp = []
     if request.return_scores and scores is not None:
-        # If scores are returned, combine them with results
         combined = []
         for doc, score in zip(results, scores):
-            # Convert numpy float32 to regular Python float for JSON serialization
             combined.append({"document": doc, "score": float(score)})
         resp.append(combined)
     else:
@@ -362,27 +375,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--retriever_model", type=str, default="intfloat/e5-base-v2", help="Path of the retriever model."
     )
-    parser.add_argument("--faiss_gpu", action="store_true", help="Use GPU for computation")
+    parser.add_argument("--faiss_gpu", action="store_true", help="Use GPU for FAISS index")
+    parser.add_argument("--device", type=str, default="cuda", help="Device for encoder model (cuda or cpu)")
+    parser.add_argument("--workers", type=int, default=1, help="Number of uvicorn workers")
 
     args = parser.parse_args()
 
-    # 1) Build a config (could also parse from arguments).
-    #    In real usage, you'd parse your CLI arguments or environment variables.
-    config = Config(
-        retrieval_method=args.retriever_name,  # or "dense"
-        index_path=args.index_path,
-        corpus_path=args.corpus_path,
-        retrieval_topk=args.topk,
-        faiss_gpu=args.faiss_gpu,
-        retrieval_model_path=args.retriever_model,
-        retrieval_pooling_method="mean",
-        retrieval_query_max_length=256,
-        retrieval_use_fp16=True,
-        retrieval_batch_size=512,  # this is unused in the current retrieval implementation, which only supports single query
-    )
+    os.environ["RETRIEVER_INDEX_PATH"] = args.index_path
+    os.environ["RETRIEVER_CORPUS_PATH"] = args.corpus_path
+    os.environ["RETRIEVER_TOPK"] = str(args.topk)
+    os.environ["RETRIEVER_NAME"] = args.retriever_name
+    os.environ["RETRIEVER_MODEL_PATH"] = args.retriever_model
+    os.environ["RETRIEVER_FAISS_GPU"] = "1" if args.faiss_gpu else "0"
+    os.environ["RETRIEVER_DEVICE"] = args.device
 
-    # 2) Instantiate a global retriever so it is loaded once and reused.
-    retriever = get_retriever(config)
-
-    # 3) Launch the server. By default, it listens on http://127.0.0.1:8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("retrieval_server:app", host="0.0.0.0", port=8000, workers=args.workers)
