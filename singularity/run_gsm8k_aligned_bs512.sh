@@ -1,18 +1,14 @@
 #!/bin/bash
-# Submit from the project root: sbatch singularity/run_gsm8k_aligned.sh
+# Submit from the project root: sbatch singularity/run_gsm8k_aligned_bs512.sh
 # Override any path via env vars before submitting, e.g.:
-#   SKYRL_HF_CACHE=/my/cache SKYRL_MODEL_PATH=/hf_cache/hub/... sbatch singularity/run_gsm8k_aligned.sh
+#   SKYRL_HF_CACHE=/my/cache SKYRL_MODEL_PATH=/hf_cache/hub/... sbatch singularity/run_gsm8k_aligned_bs512.sh
 #
-# Aligned 3-way comparison run — SkyRL side.
+# Aligned run with train_batch_size=512 (2× the baseline job1400905).
 #
-# Config matches OpenRLHF job 1397622 (the reference):
-#   batch=256, n=8, max_generate_length=512, max_prompt_length=512
-#   TP=1 × 4 engines, gpu_memory_utilization=0.4, lr=1e-6, kl_coef=0.001
-#
-# Only change vs run_gsm8k_profiled.sh:
-#   max_generate_length 2048 → 512
+# Config matches run_gsm8k_aligned.sh exactly except:
+#   train_batch_size 256 → 512  (policy_mini_batch_size kept at 64 → 8 accum steps)
 
-#SBATCH --job-name=skyrl-gsm8k-aligned
+#SBATCH --job-name=skyrl-gsm8k-bs512
 #SBATCH --account=i20240005g
 #SBATCH --partition=normal-a100-40
 #SBATCH --nodes=1
@@ -21,8 +17,8 @@
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:a100:4
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/aligned_gsm8k_%j.log
-#SBATCH --error=logs/aligned_gsm8k_%j_err.log
+#SBATCH --output=logs/aligned_gsm8k_bs512_%j.log
+#SBATCH --error=logs/aligned_gsm8k_bs512_%j_err.log
 
 set -e
 
@@ -38,16 +34,16 @@ MODEL_PATH="${SKYRL_MODEL_PATH:-/hf_cache/hub/models--Qwen--Qwen3-4B/snapshots/1
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "========================================================"
-echo "  SkyRL GSM8K GRPO — ALIGNED — 4x A100-40"
+echo "  SkyRL GSM8K GRPO — ALIGNED — 4x A100-40 — bs=512"
 echo "  Model: Qwen/Qwen3-4B"
-echo "  batch=256  n=8  max_new_tokens=512  TP=1"
+echo "  batch=512  n=8  max_new_tokens=512  TP=1"
 echo "========================================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_NODELIST"
 echo "Time:   $(date)"
 echo ""
 
-MONITOR_CSV="${LOG_DIR}/monitor_aligned_${SLURM_JOB_ID}.csv"
+MONITOR_CSV="${LOG_DIR}/monitor_aligned_bs512_${SLURM_JOB_ID}.csv"
 MONITOR_SCRIPT="$PROJECT/singularity/monitor_resources.py"
 
 mkdir -p "$LOG_DIR" "$PIP_USERBASE"
@@ -63,7 +59,7 @@ python3 "$MONITOR_SCRIPT" \
     --interval 5 \
     --num-gpus 4 \
     --num-cpus "${SLURM_CPUS_ON_NODE:-32}" \
-    > "${LOG_DIR}/monitor_aligned_${SLURM_JOB_ID}.log" 2>&1 &
+    > "${LOG_DIR}/monitor_aligned_bs512_${SLURM_JOB_ID}.log" 2>&1 &
 MONITOR_PID=$!
 
 cleanup() { kill "$MONITOR_PID" 2>/dev/null || true; }
@@ -107,7 +103,7 @@ pip install --break-system-packages --no-deps -q -e . -e ./skyrl-gym
 echo "=== Verifying GPU visibility ==="
 python -c "import torch; print(f\"GPUs: {torch.cuda.device_count()}, CUDA: {torch.version.cuda}\")"
 
-echo "=== Starting aligned GSM8K+GRPO training ==="
+echo "=== Starting aligned GSM8K+GRPO training (bs=512) ==="
 python run_profiled.py \
     "data.train_data=[\"/data/gsm8k/train.parquet\"]" \
     "data.val_data=[\"/data/gsm8k/validation.parquet\"]" \
@@ -121,7 +117,7 @@ python run_profiled.py \
     generator.inference_engine.tensor_parallel_size=1 \
     trainer.epochs=2 \
     trainer.update_epochs_per_batch=1 \
-    trainer.train_batch_size=256 \
+    trainer.train_batch_size=512 \
     trainer.policy_mini_batch_size=64 \
     trainer.critic_mini_batch_size=64 \
     trainer.micro_forward_batch_size_per_gpu=4 \
@@ -145,13 +141,13 @@ python run_profiled.py \
     generator.inference_engine.gpu_memory_utilization=0.5 \
     trainer.logger=console \
     trainer.project_name=skyrl-gsm8k-aligned \
-    trainer.run_name=qwen3-4b-grpo-gsm8k-aligned_${SLURM_JOB_ID} \
+    trainer.run_name=qwen3-4b-grpo-gsm8k-aligned-bs512_${SLURM_JOB_ID} \
     trainer.ckpt_path=/tmp/ckpts \
     trainer.export_path=/tmp/exports
 '
 
 echo ""
-echo "=== Aligned run complete at: $(date) ==="
+echo "=== Aligned bs=512 run complete at: $(date) ==="
 echo ""
 echo "── Profiling results ───────────────────────────────────────────────────"
 echo "  Stage timings + memory + GPU util saved to:"

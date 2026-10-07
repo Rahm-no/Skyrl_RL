@@ -1,4 +1,8 @@
 #!/bin/bash
+# Submit from the project root: sbatch singularity/run_plots.sh <profiling_dir> <monitor_csv>
+# Example:
+#   sbatch singularity/run_plots.sh profiling_results/20260525_213703_job1327572 logs/monitor_1327572.csv
+
 #SBATCH --job-name=skyrl-plots
 #SBATCH --account=i20240005x
 #SBATCH --partition=dev-x86
@@ -7,21 +11,23 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=0:15:00
-#SBATCH --output=/projects/I20240005/rnouaj/skyrl/logs/plots_%j.log
-#SBATCH --error=/projects/I20240005/rnouaj/skyrl/logs/plots_%j_err.log
+#SBATCH --output=logs/plots_%j.log
+#SBATCH --error=logs/plots_%j_err.log
 
 set -e
 
-PROJECT=/projects/I20240005/rnouaj/skyrl
-SIF=$PROJECT/singularity/skyrl_fsdp.sif
+# ── Configurable paths (override via environment variables) ──────────────────
+PROJECT="${SKYRL_PROJECT:-/projects/I20240005/rnouaj/skyrl}"
+SIF="${SKYRL_SIF:-$PROJECT/singularity/skyrl_fsdp.sif}"
+# ─────────────────────────────────────────────────────────────────────────────
 
 PROFILING_DIR="$1"
 MONITOR_CSV="$2"
 
 if [ -z "$PROFILING_DIR" ] || [ -z "$MONITOR_CSV" ]; then
-    echo "Usage: sbatch run_plots.sh <profiling_dir> <monitor_csv>"
+    echo "Usage: sbatch singularity/run_plots.sh <profiling_dir> <monitor_csv>"
     echo "Example:"
-    echo "  sbatch run_plots.sh profiling_results/20260525_213703_job1327572 logs/monitor_1327572.csv"
+    echo "  sbatch singularity/run_plots.sh profiling_results/20260525_213703_job1327572 logs/monitor_1327572.csv"
     exit 1
 fi
 

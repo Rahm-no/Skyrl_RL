@@ -257,6 +257,7 @@ class ProfiledRayPPOTrainer(RayPPOTrainer):
                             await self.dispatch.save_weights_for_sampler()
 
                 profiled_timings["step_total"] = time.perf_counter() - step_t0  ##
+                self._set_stage("inter_step")  ## tags logging/tracker/dataloader gap
 
                 # eval
                 logger.info(status)

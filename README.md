@@ -10,6 +10,13 @@
 
 ---
 
+> [!NOTE]
+> **This fork adds GSM8K (math) and APPS (coding) GRPO workloads with profiling**, run on Qwen3-4B with 4× A100 (SLURM + Singularity).
+> - **GSM8K:** pass@1 went from 11.5% to 88.2% in 28 steps (~6 min/step).
+> - **APPS:** pass@1 went from 12.2% to 22.5% in 15 steps (~29 min/step). Generation takes 63% of each step because most wrong answers hit the 2048-token cap. We also tested `batched=true`, shorter generation, round-robin routing, and thinking on vs off.
+>
+> See **[workloads/README.md](./workloads/README.md)** for scripts, results and how to run them.
+
 # Overview
 
 > [!IMPORTANT]

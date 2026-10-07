@@ -47,7 +47,12 @@ From: pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
         vllm-router \
         nixl \
         torchvision \
-        torchdata
+        torchdata \
+        faiss-gpu
+
+    # Fix prometheus_fastapi_instrumentator crash on _IncludedRouter.path
+    # (vLLM 0.20.2 bundles a version incompatible with newer Starlette)
+    $PIP --upgrade prometheus-fastapi-instrumentator
 
     # Install skyrl and skyrl-gym in editable mode from bind-mounted project
     # (done at runtime via --bind, so just record the path for reference)

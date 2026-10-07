@@ -1,4 +1,8 @@
 #!/bin/bash
+# Submit from the project root: sbatch singularity/run_gsm8k_profiled.sh
+# Override any path via env vars before submitting, e.g.:
+#   SKYRL_HF_CACHE=/my/cache SKYRL_MODEL_PATH=/hf_cache/hub/... sbatch singularity/run_gsm8k_profiled.sh
+
 #SBATCH --job-name=skyrl-gsm8k-prof
 #SBATCH --account=i20240005g
 #SBATCH --partition=dev-a100-40
@@ -8,10 +12,20 @@
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:a100:4
 #SBATCH --time=4:00:00
-#SBATCH --output=/projects/I20240005/rnouaj/skyrl/logs/profiled_gsm8k_%j.log
-#SBATCH --error=/projects/I20240005/rnouaj/skyrl/logs/profiled_gsm8k_%j_err.log
+#SBATCH --output=logs/profiled_gsm8k_%j.log
+#SBATCH --error=logs/profiled_gsm8k_%j_err.log
 
 set -e
+
+# ── Configurable paths (override via environment variables) ──────────────────
+PROJECT="${SKYRL_PROJECT:-/projects/I20240005/rnouaj/skyrl}"
+SIF="${SKYRL_SIF:-$PROJECT/singularity/skyrl_fsdp.sif}"
+DATA_DIR="${SKYRL_DATA_DIR:-/projects/I20240005/rnouaj/data/gsm8k}"
+HF_CACHE="${SKYRL_HF_CACHE:-/projects/I20240005/rnouaj/cache/huggingface}"
+PIP_USERBASE="${SKYRL_PIP_USERBASE:-/projects/I20240005/rnouaj/pip_userbase}"
+LOG_DIR="${SKYRL_LOG_DIR:-$PROJECT/logs}"
+MODEL_PATH="${SKYRL_MODEL_PATH:-/hf_cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c}"
+# ─────────────────────────────────────────────────────────────────────────────
 
 echo "========================================================"
 echo "  SkyRL GSM8K GRPO PROFILING run on 4x A100-40"
@@ -22,12 +36,6 @@ echo "Node:   $SLURM_NODELIST"
 echo "Time:   $(date)"
 echo ""
 
-PROJECT=/projects/I20240005/rnouaj/skyrl
-SIF=$PROJECT/singularity/skyrl_fsdp.sif
-DATA_DIR=/projects/I20240005/rnouaj/data/gsm8k
-HF_CACHE=/projects/I20240005/rnouaj/cache/huggingface
-PIP_USERBASE=/projects/I20240005/rnouaj/pip_userbase
-LOG_DIR=$PROJECT/logs
 MONITOR_CSV="${LOG_DIR}/monitor_gsm8k_${SLURM_JOB_ID}.csv"
 MONITOR_SCRIPT="$PROJECT/singularity/monitor_resources.py"
 
@@ -82,6 +90,7 @@ singularity exec --nv \
     --env RAY_TMPDIR=/tmp/ray \
     --env NCCL_DEBUG=WARN \
     --env SLURM_JOB_ID="$SLURM_JOB_ID" \
+    --env MODEL_PATH="$MODEL_PATH" \
     "$SIF" \
     bash -c '
 set -e
@@ -98,7 +107,7 @@ python run_profiled.py \
     "data.train_data=[\"/data/gsm8k/train.parquet\"]" \
     "data.val_data=[\"/data/gsm8k/validation.parquet\"]" \
     trainer.algorithm.advantage_estimator=grpo \
-    trainer.policy.model.path=/hf_cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c \
+    trainer.policy.model.path=$MODEL_PATH \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp \
     trainer.placement.policy_num_gpus_per_node=4 \

@@ -1,35 +1,36 @@
 #!/bin/bash
-# Submit from the project root: sbatch singularity/run_gsm8k_grpo_a100.sh
+# Submit from the project root: sbatch singularity/run_apps_grpo_a100_80gb.sh
 # Override any path via env vars before submitting, e.g.:
-#   SKYRL_HF_CACHE=/my/cache SKYRL_MODEL_PATH=/hf_cache/hub/... sbatch singularity/run_gsm8k_grpo_a100.sh
+#   SKYRL_DATA_DIR=/my/data/apps sbatch singularity/run_apps_grpo_a100_80gb.sh
 
-#SBATCH --job-name=skyrl-gsm8k
+#SBATCH --job-name=skyrl-apps-80
 #SBATCH --account=i20240005g
-#SBATCH --partition=dev-a100-40
+#SBATCH --partition=dev-a100-80
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
 #SBATCH --gres=gpu:a100:4
 #SBATCH --time=4:00:00
-#SBATCH --output=logs/gsm8k_%j.log
-#SBATCH --error=logs/gsm8k_%j_err.log
+#SBATCH --output=logs/apps_%j.log
+#SBATCH --error=logs/apps_%j_err.log
+#SBATCH --exclude=gnx512
 
 set -e
 
 # ── Configurable paths (override via environment variables) ──────────────────
 PROJECT="${SKYRL_PROJECT:-/projects/I20240005/rnouaj/skyrl}"
 SIF="${SKYRL_SIF:-$PROJECT/singularity/skyrl_fsdp.sif}"
-DATA_DIR="${SKYRL_DATA_DIR:-$HOME/data/gsm8k}"
-HF_CACHE="${SKYRL_HF_CACHE:-$HOME/cache/huggingface}"
+DATA_DIR="${SKYRL_DATA_DIR:-/projects/I20240005/rnouaj/data/apps}"
+HF_CACHE="${SKYRL_HF_CACHE:-/projects/I20240005/rnouaj/cache/huggingface}"
 PIP_USERBASE="${SKYRL_PIP_USERBASE:-/projects/I20240005/rnouaj/pip_userbase}"
 LOG_DIR="${SKYRL_LOG_DIR:-$PROJECT/logs}"
-MODEL_PATH="${SKYRL_MODEL_PATH:-/hf_cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c}"
+MODEL_PATH="${SKYRL_MODEL_PATH:-/hf_cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "========================================================"
-echo "  SkyRL GSM8K GRPO training on 4x A100-40"
-echo "  Model: Qwen/Qwen3-4B"
+echo "  SkyRL APPS GRPO stress-test on 4x A100-80"
+echo "  Model: Qwen/Qwen2.5-7B-Instruct"
 echo "========================================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_NODELIST"
@@ -48,7 +49,7 @@ mkdir -p "$RAY_TMPDIR"
 
 singularity exec --nv \
     --bind "$PROJECT":/skyrl \
-    --bind "$DATA_DIR":/data/gsm8k \
+    --bind "$DATA_DIR":/data/apps \
     --bind "$HF_CACHE":/hf_cache \
     --bind "$PIP_USERBASE":/pip_userbase \
     --bind "$RAY_TMPDIR":/tmp/ray \
@@ -76,10 +77,10 @@ pip install --break-system-packages --no-deps -q -e . -e ./skyrl-gym
 echo "=== Verifying GPU visibility ==="
 python -c "import torch; print(f\"GPUs: {torch.cuda.device_count()}, CUDA: {torch.version.cuda}\")"
 
-echo "=== Starting GRPO+GSM8K training ==="
+echo "=== Starting GRPO+APPS stress-test training ==="
 python -m skyrl.train.entrypoints.main_base \
-    "data.train_data=[\"/data/gsm8k/train.parquet\"]" \
-    "data.val_data=[\"/data/gsm8k/validation.parquet\"]" \
+    "data.train_data=[\"/data/apps/train.parquet\"]" \
+    "data.val_data=[\"/data/apps/validation.parquet\"]" \
     trainer.algorithm.advantage_estimator=grpo \
     trainer.policy.model.path=$MODEL_PATH \
     trainer.placement.colocate_all=true \
@@ -88,18 +89,17 @@ python -m skyrl.train.entrypoints.main_base \
     trainer.placement.ref_num_gpus_per_node=4 \
     generator.inference_engine.num_engines=4 \
     generator.inference_engine.tensor_parallel_size=1 \
-    trainer.epochs=1 \
+    trainer.epochs=5 \
     trainer.update_epochs_per_batch=1 \
     trainer.train_batch_size=256 \
     trainer.policy_mini_batch_size=64 \
-    trainer.critic_mini_batch_size=64 \
-    trainer.micro_forward_batch_size_per_gpu=4 \
+    trainer.micro_forward_batch_size_per_gpu=8 \
     trainer.micro_train_batch_size_per_gpu=4 \
-    trainer.eval_batch_size=100 \
+    trainer.eval_batch_size=256 \
     trainer.eval_before_train=true \
     trainer.eval_interval=5 \
-    trainer.ckpt_interval=10 \
-    trainer.max_prompt_length=512 \
+    trainer.ckpt_interval=100 \
+    trainer.max_prompt_length=1024 \
     generator.sampling_params.max_generate_length=2048 \
     trainer.policy.optimizer_config.lr=1.0e-6 \
     trainer.algorithm.use_kl_loss=true \
@@ -107,13 +107,13 @@ python -m skyrl.train.entrypoints.main_base \
     generator.inference_engine.run_engines_locally=true \
     generator.inference_engine.weight_sync_backend=nccl \
     generator.inference_engine.async_engine=true \
-    generator.batched=false \
-    environment.env_class=gsm8k \
+    generator.batched=true \
+    environment.env_class=lcb \
     generator.n_samples_per_prompt=8 \
-    generator.inference_engine.gpu_memory_utilization=0.4 \
+    generator.inference_engine.gpu_memory_utilization=0.6 \
     trainer.logger=console \
-    trainer.project_name=skyrl-gsm8k \
-    trainer.run_name=qwen3-4b-grpo-gsm8k_${SLURM_JOB_ID} \
+    trainer.project_name=skyrl-apps \
+    trainer.run_name=qwen2.5-7b-grpo-apps_${SLURM_JOB_ID} \
     trainer.ckpt_path=/tmp/ckpts \
     trainer.export_path=/tmp/exports
 '

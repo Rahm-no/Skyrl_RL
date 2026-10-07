@@ -126,3 +126,8 @@ tx/tinker/alembic/__pycache__/
 
 # claude settings
 .claude/settings.json
+# Local workload artifacts (too large / per-run)
+*.sif
+/logs/
+/profiling_results/
+/singularity/cache/

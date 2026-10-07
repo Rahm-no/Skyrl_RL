@@ -9,7 +9,13 @@ Turn structure is inferred from the token-level reward list:
   - Number of turns = count of non-zero reward entries
   - Solve turn = 1-based index of first reward >= 1.0, or -1 if unsolved
 
-Output: profiling_results/<run>/rollout_stats.jsonl
+Also captures fine-grained GPU vs CPU breakdown per trajectory via the
+``rollout_profiling`` and ``sandbox_profiling`` dicts that agent_loop() and
+LCBEnv inject into env_metrics.
+
+Output:
+  profiling_results/<run>/rollout_stats.jsonl      (per-trajectory wall-clock + turns)
+  profiling_results/<run>/rollout_profiling.jsonl   (GPU/CPU breakdown per trajectory)
 """
 
 import json
@@ -19,6 +25,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from skyrl.train.generators.skyrl_gym_generator import SkyRLGymGenerator
 from skyrl.train.generators.base import TrajectoryID
+from profiling.rollout_profiler import RolloutProfiler
 
 
 class ProfiledSkyRLGymGenerator(SkyRLGymGenerator):
@@ -27,12 +34,17 @@ class ProfiledSkyRLGymGenerator(SkyRLGymGenerator):
     per-trajectory stats to JSONL.
 
     Multi-turn behavior is completely preserved — only timing is added.
+
+    Also collects fine-grained GPU generation vs. CPU sandbox timing from
+    env_metrics (populated by the base agent_loop and LCBEnv instrumentation)
+    and writes it via RolloutProfiler.
     """
 
     def __init__(self, *args, profiling_out_dir: Path, **kwargs):
         super().__init__(*args, **kwargs)
         profiling_out_dir.mkdir(parents=True, exist_ok=True)
         self._stats_path = profiling_out_dir / "rollout_stats.jsonl"
+        self._rollout_profiler = RolloutProfiler(profiling_out_dir)
         self._global_step = 0
         print(f"[rollout_stats] profiler active → {self._stats_path}", flush=True)
 
@@ -90,7 +102,23 @@ class ProfiledSkyRLGymGenerator(SkyRLGymGenerator):
         batch_meta = input_batch.get("batch_metadata") if isinstance(input_batch, dict) else None
         if batch_meta is not None and hasattr(batch_meta, "global_step"):
             self._global_step = batch_meta.global_step
-        return await super().generate(input_batch, disable_tqdm=disable_tqdm)
+        result = await super().generate(input_batch, disable_tqdm=disable_tqdm)
+
+        env_metrics = result.get("env_metrics", [])
+        if env_metrics:
+            self._rollout_profiler.record_batch(
+                global_step=self._global_step,
+                env_metrics=env_metrics,
+                trajectory_ids=input_batch.get("trajectory_ids"),
+                rewards=result.get("rewards"),
+                response_ids=result.get("response_ids"),
+                env_extras=input_batch.get("env_extras"),
+            )
+
+        return result
+
+    def get_profiling_summary(self) -> str:
+        return self._rollout_profiler.summary()
 
 
 def _infer_turn_stats(reward_list: Union[List[float], float]):

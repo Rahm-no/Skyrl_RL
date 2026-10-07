@@ -1,4 +1,8 @@
 #!/bin/bash
+# Submit from the project root: sbatch singularity/run_multiply_a100_monitored.sh
+# Override any path via env vars before submitting, e.g.:
+#   SKYRL_HF_CACHE=/my/cache SKYRL_MODEL_PATH=/hf_cache/hub/... sbatch singularity/run_multiply_a100_monitored.sh
+
 #SBATCH --job-name=skyrl-multiply
 #SBATCH --account=i20240005g
 #SBATCH --partition=dev-a100-40
@@ -8,10 +12,19 @@
 #SBATCH --mem=128G
 #SBATCH --gres=gpu:a100:4
 #SBATCH --time=2:00:00
-#SBATCH --output=/projects/I20240005/rnouaj/skyrl/logs/multiply_%j.log
-#SBATCH --error=/projects/I20240005/rnouaj/skyrl/logs/multiply_%j_err.log
+#SBATCH --output=logs/multiply_%j.log
+#SBATCH --error=logs/multiply_%j_err.log
 
 set -e
+
+# ── Configurable paths (override via environment variables) ──────────────────
+PROJECT="${SKYRL_PROJECT:-/projects/I20240005/rnouaj/skyrl}"
+SIF="${SKYRL_SIF:-$PROJECT/singularity/skyrl_fsdp.sif}"
+DATA_DIR="${SKYRL_DATA_DIR:-$HOME/data/multiply_parquet}"
+HF_CACHE="${SKYRL_HF_CACHE:-$HOME/cache/huggingface}"
+LOG_DIR="${SKYRL_LOG_DIR:-$PROJECT/logs}"
+MODEL_PATH="${SKYRL_MODEL_PATH:-/hf_cache/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306}"
+# ─────────────────────────────────────────────────────────────────────────────
 
 echo "========================================================"
 echo "  SkyRL multiply training on 4x A100-40"
@@ -21,11 +34,6 @@ echo "Node:   $SLURM_NODELIST"
 echo "Time:   $(date)"
 echo ""
 
-PROJECT=/projects/I20240005/rnouaj/skyrl
-SIF=$PROJECT/singularity/skyrl_fsdp.sif
-DATA_DIR=/projects/I20240005/rnouaj/data/multiply_parquet
-HF_CACHE=/projects/I20240005/rnouaj/cache/huggingface
-LOG_DIR=$PROJECT/logs
 MONITOR_CSV="${LOG_DIR}/monitor_${SLURM_JOB_ID}.csv"
 MONITOR_SCRIPT="$PROJECT/singularity/monitor_resources.py"
 
@@ -47,7 +55,6 @@ python3 "$MONITOR_SCRIPT" \
     > "${LOG_DIR}/monitor_${SLURM_JOB_ID}.log" 2>&1 &
 MONITOR_PID=$!
 
-# Cleanup monitoring on exit (normal or error)
 cleanup() {
   kill "$MONITOR_PID" 2>/dev/null || true
 }
@@ -67,9 +74,9 @@ singularity exec --nv \
     --bind "$PROJECT":/skyrl \
     --bind "$DATA_DIR":/data/multiply \
     --bind "$HF_CACHE":/hf_cache \
+    --bind "$RAY_TMPDIR":/tmp/ray \
     --env HF_HOME=/hf_cache \
     --env HUGGINGFACE_HUB_CACHE=/hf_cache/hub \
-    --bind "$RAY_TMPDIR":/tmp/ray \
     --env PYTHONDONTWRITEBYTECODE=1 \
     --env TOKENIZERS_PARALLELISM=false \
     --env HF_HUB_ENABLE_HF_TRANSFER=0 \
@@ -78,6 +85,8 @@ singularity exec --nv \
     --env OMP_NUM_THREADS=4 \
     --env RAY_TMPDIR=/tmp/ray \
     --env NCCL_DEBUG=WARN \
+    --env SLURM_JOB_ID="$SLURM_JOB_ID" \
+    --env MODEL_PATH="$MODEL_PATH" \
     "$SIF" \
     bash -c '
 set -e
@@ -94,7 +103,7 @@ python -m examples.train.multiply.main_multiply \
     "data.train_data=[\"/data/multiply/train.parquet\"]" \
     "data.val_data=[\"/data/multiply/validation.parquet\"]" \
     trainer.algorithm.advantage_estimator=grpo \
-    trainer.policy.model.path=/hf_cache/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306 \
+    trainer.policy.model.path=$MODEL_PATH \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp \
     trainer.placement.policy_num_gpus_per_node=4 \

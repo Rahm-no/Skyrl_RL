@@ -121,6 +121,10 @@ class ProfiledPPOExp(BasePPOExp):
             # Print weight sync summary
             print(ws_profiler.summary())
 
+            # Print rollout profiling summary (GPU vs CPU breakdown)
+            if hasattr(trainer.generator, "get_profiling_summary"):
+                print(trainer.generator.get_profiling_summary())
+
         finally:
             mem_monitor.stop()
             gpu_summary = gpu_monitor.stop()
@@ -132,11 +136,12 @@ class ProfiledPPOExp(BasePPOExp):
 
 def _print_plot_instructions(out_dir: Path):
     print("\n── To generate plots, run: ─────────────────────────────────────────────")
-    print(f"  python profiling/plots/plot_stage_times.py {out_dir}/stage_times.jsonl")
-    print(f"  python profiling/plots/plot_memory.py      {out_dir}/memory.csv")
-    print(f"  python profiling/plots/plot_weight_sync.py {out_dir}/weight_sync.jsonl")
-    print(f"  python profiling/plots/plot_rollout.py     {out_dir}/rollout_stats.jsonl")
-    print(f"  python profiling/plots/plot_gpu_util.py    {out_dir}/gpu_util.csv")
+    print(f"  python profiling/plots/plot_stage_times.py       {out_dir}/stage_times.jsonl")
+    print(f"  python profiling/plots/plot_memory.py            {out_dir}/memory.csv")
+    print(f"  python profiling/plots/plot_weight_sync.py       {out_dir}/weight_sync.jsonl")
+    print(f"  python profiling/plots/plot_rollout.py           {out_dir}/rollout_stats.jsonl")
+    print(f"  python profiling/plots/plot_gpu_util.py          {out_dir}/gpu_util.csv")
+    print(f"  python profiling/plots/plot_rollout_profiling.py --input {out_dir}/rollout_profiling.jsonl")
     print("────────────────────────────────────────────────────────────────────────")
 
 
@@ -157,6 +162,12 @@ def main():
     PROFILING_OUT.mkdir(parents=True, exist_ok=True)
     print(f"[profiling] Output directory: {PROFILING_OUT}", flush=True)
     print(f"[profiling] Profiling enabled: {PROFILING_ENABLED}", flush=True)
+
+    from omegaconf import OmegaConf
+    config_path = PROFILING_OUT / "config.yaml"
+    with open(config_path, "w") as f:
+        f.write(OmegaConf.to_yaml(OmegaConf.structured(cfg)))
+    print(f"[profiling] Config saved to: {config_path}", flush=True)
 
     ray.get(profiled_entrypoint.remote(cfg, str(PROFILING_OUT), PROFILING_ENABLED))
 

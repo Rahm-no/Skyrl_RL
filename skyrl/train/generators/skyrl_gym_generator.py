@@ -7,6 +7,7 @@ For details, see https://docs.skyrl.ai/docs/tutorials/skyrl_gym_generator
 
 import asyncio
 import copy
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -353,6 +354,10 @@ class SkyRLGymGenerator(GeneratorInterface):
             done=False,
         )
 
+        _prof_generation_s = 0.0
+        _prof_sandbox_s = 0.0
+        _prof_num_turns = 0
+
         while not agent_loop_state.done:
 
             if len(agent_loop_state.input_ids) > max_input_length:
@@ -376,7 +381,9 @@ class SkyRLGymGenerator(GeneratorInterface):
             engine_input = InferenceEngineInput(
                 prompt_token_ids=[agent_loop_state.input_ids], session_ids=[session_id], sampling_params=sampling_params
             )
+            _t_gen = time.perf_counter()
             engine_output = await self.inference_engine_client.generate(engine_input, model=self.policy_model_name)
+            _prof_generation_s += time.perf_counter() - _t_gen
             output = engine_output["responses"][0]
             output_ids = engine_output["response_ids"][0]
             stop_reason = engine_output["stop_reasons"][0]
@@ -408,7 +415,10 @@ class SkyRLGymGenerator(GeneratorInterface):
                     added_eos = True
 
             # 2. Environment step
+            _t_env = time.perf_counter()
             env_step_output: BaseTextEnvStepOutput = await self._run_in_executor_if_available(env.step, output)
+            _prof_sandbox_s += time.perf_counter() - _t_env
+            _prof_num_turns += 1
             new_obs = env_step_output["observations"]
             step_reward: float = env_step_output["reward"]
             agent_loop_state.done = env_step_output["done"]
@@ -481,6 +491,11 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         # Get environment-specific metrics after the episode is done
         env_metrics = env.get_metrics()
+        env_metrics["rollout_profiling"] = {
+            "generation_time_s": round(_prof_generation_s, 6),
+            "sandbox_time_s": round(_prof_sandbox_s, 6),
+            "num_turns": _prof_num_turns,
+        }
         # Close the environment
         await self._run_in_executor_if_available(env.close)
 
@@ -714,7 +729,9 @@ class SkyRLGymGenerator(GeneratorInterface):
             return_dict=False,
         )
         engine_input = InferenceEngineInput(prompt_token_ids=prompt_token_ids, sampling_params=sampling_params)
+        _t_gen_batch = time.perf_counter()
         engine_output = await self.inference_engine_client.generate(engine_input, model=self.policy_model_name)
+        _batch_generation_s = time.perf_counter() - _t_gen_batch
         outputs = engine_output["responses"]
         responses = engine_output["response_ids"]
         stop_reasons = engine_output["stop_reasons"]
@@ -728,9 +745,12 @@ class SkyRLGymGenerator(GeneratorInterface):
         truncated_logprobs: Optional[List[List[float]]] = [] if logprobs is not None else None
         truncated_indices: Optional[List] = [] if raw_rollout_expert_indices is not None else None
 
+        _per_sample_gen_s = _batch_generation_s / max(len(outputs), 1)
         for i, (output, response, env, env_class) in enumerate(zip(outputs, responses, envs, env_classes)):
             # step on environment and compute reward
+            _t_env = time.perf_counter()
             env_step_output: BaseTextEnvStepOutput = await self._run_in_executor_if_available(env.step, output)
+            _sandbox_s = time.perf_counter() - _t_env
             reward = env_step_output["reward"]
             rewards.append(reward)
 
@@ -747,7 +767,13 @@ class SkyRLGymGenerator(GeneratorInterface):
                 truncated_indices.append(sample_indices[: prompt_len + len(response)])
 
             # Get environment-specific metrics
-            env_metrics.append(env.get_metrics())
+            metrics = env.get_metrics()
+            metrics["rollout_profiling"] = {
+                "generation_time_s": round(_per_sample_gen_s, 6),
+                "sandbox_time_s": round(_sandbox_s, 6),
+                "num_turns": 1,
+            }
+            env_metrics.append(metrics)
             # Close the environment
             await self._run_in_executor_if_available(env.close)
 
